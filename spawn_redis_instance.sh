@@ -42,7 +42,7 @@ network_name=$( tr '_A-Z' '-a-z' <<< "${network:?}" )
 svc_name="${prefix:?}-redis"
 
 triton "${profile[@]}" "${account[@]}" inst create \
-  base-64-lts@19.4.0 g4-highcpu-4G \
+  base-64-lts@25.4.0 sample-1G \
   --name="${prefix:?}-redis-{{shortId}}" --network="${network:?}" \
   -m redis_token="${token:?}" \
   -m network_name="${network_name}" \
