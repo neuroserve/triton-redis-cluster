@@ -89,48 +89,50 @@ self=$(mdata-get sdc:nics | json -ac 'this.nic_tag.match(/sdc_overlay/)' ip)
 
 mkdir -p /opt/custom/smf
 
-init_patch="--- redis.conf.orig     2020-06-05 00:06:18.624559468 +0000
-+++ redis.conf  2020-06-05 00:06:19.907257042 +0000
-@@ -66,7 +66,6 @@
- # IF YOU ARE SURE YOU WANT YOUR INSTANCE TO LISTEN TO ALL THE INTERFACES
- # JUST COMMENT THE FOLLOWING LINE.
+init_patch="--- redis.conf.orig     2025-12-29 22:57:34.368329873 +0000
++++ redis.conf  2025-12-29 23:09:35.691209850 +0000
+@@ -84,7 +84,6 @@
+ # You will also need to set a password unless you explicitly disable protected
+ # mode.
  # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
--bind 127.0.0.1
+-bind 127.0.0.1 -::1
 
- # Protected mode is a layer of security protection, in order to avoid that
- # Redis instances left open on the internet are accessed and exploited.
-@@ -290,7 +289,7 @@
- # starting the replication synchronization process, otherwise the master will
+ # By default, outgoing connections (from replica to master, from Sentinel to
+ # instances, cluster bus, etc.) are not bound to a specific local address. In
+@@ -538,7 +537,8 @@
  # refuse the replica request.
  #
--# masterauth <master-password>
+ # masterauth <master-password>
+-#
 +masterauth $token
-
- # When a replica loses its connection with the master, or when the replication
- # is still in progress, the replica can act in two different ways:
-@@ -504,7 +503,7 @@
- # 150k passwords per second against a good box. This means that you should
- # use a very strong password otherwise it will be very easy to break.
++
+ # However this is not enough if you are using Redis ACLs (for Redis version
+ # 6 or greater), and the default user is not capable of running the PSYNC
+ # command and/or other commands needed for replication. In this case it's
+@@ -1041,7 +1041,7 @@
+ # The requirepass is not compatible with aclfile option and the ACL LOAD
+ # command, these will cause requirepass to be ignored.
  #
 -# requirepass foobared
 +requirepass $token
 
- # Command renaming.
+ # New users are initialized with restrictive permissions by default, via the
+ # equivalent of this ACL rule 'off resetkeys -@all'. Starting with Redis 6.2, it
  #"
 
 # shellcheck disable=2140
 join_patch="
---- redis.conf.orig     2020-06-05 00:29:19.579442594 +0000
-+++ redis.conf  2020-06-05 00:31:20.794894837 +0000
-@@ -66,7 +66,6 @@
- # IF YOU ARE SURE YOU WANT YOUR INSTANCE TO LISTEN TO ALL THE INTERFACES
- # JUST COMMENT THE FOLLOWING LINE.
+--- redis.conf.orig     2025-12-29 23:22:16.212801197 +0000
++++ redis.conf  2025-12-29 23:25:12.520317611 +0000
+@@ -84,7 +84,6 @@
+ # You will also need to set a password unless you explicitly disable protected
+ # mode.
  # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
--bind 127.0.0.1
+-bind 127.0.0.1 -::1
 
- # Protected mode is a layer of security protection, in order to avoid that
- # Redis instances left open on the internet are accessed and exploited.
-@@ -284,6 +283,7 @@
+ # By default, outgoing connections (from replica to master, from Sentinel to
+ # instances, cluster bus, etc.) are not bound to a specific local address. In
+@@ -531,6 +530,7 @@
  #    and resynchronize with them.
  #
  # replicaof <masterip> <masterport>
@@ -138,21 +140,24 @@ join_patch="
 
  # If the master is password protected (using the "requirepass" configuration
  # directive below) it is possible to tell the replica to authenticate before
-@@ -291,6 +291,7 @@
+@@ -538,7 +538,8 @@
  # refuse the replica request.
  #
  # masterauth <master-password>
+-#
 +masterauth $token
-
- # When a replica loses its connection with the master, or when the replication
- # is still in progress, the replica can act in two different ways:
-@@ -505,6 +506,7 @@
- # use a very strong password otherwise it will be very easy to break.
++
+ # However this is not enough if you are using Redis ACLs (for Redis version
+ # 6 or greater), and the default user is not capable of running the PSYNC
+ # command and/or other commands needed for replication. In this case it's
+@@ -1042,6 +1043,7 @@
+ # command, these will cause requirepass to be ignored.
  #
  # requirepass foobared
 +requirepass $token
 
- # Command renaming.
+ # New users are initialized with restrictive permissions by default, via the
+ # equivalent of this ACL rule 'off resetkeys -@all'. Starting with Redis 6.2, it
  #"
 
 if (( ${#peers[@]} == 0 )); then
@@ -165,9 +170,13 @@ fi
 
 pkgin -y install redis tmux
 
-patch /opt/local/etc/redis.conf <<< "$patch"
+mkdir -p /opt/local/etc/redis
 
-cat > /opt/local/etc/sentinel.conf << EOF
+mv /opt/local/etc/redis.conf /opt/local/etc/redis/redis.conf
+
+patch /opt/local/etc/redis/redis.conf <<< "$patch"
+
+cat > /opt/local/etc/redis/sentinel.conf << EOF
 bind $self
 port 26379
 daemonize yes
@@ -207,7 +216,7 @@ cat > /opt/custom/smf/redis-sentinel.xml << EOF
       <propval name="ignore_error" type="astring" value="core,signal" />
     </property_group>
     <property_group name="application" type="application">
-      <propval name="config_file" type="astring" value="/opt/local/etc/sentinel.conf" />
+      <propval name="config_file" type="astring" value="/opt/local/etc/redis/sentinel.conf" />
     </property_group>
     <template>
       <common_name>
@@ -218,9 +227,45 @@ cat > /opt/custom/smf/redis-sentinel.xml << EOF
 </service_bundle>
 EOF
 
-chown redis:redis /opt/local/etc/{redis,sentinel}.conf
+cat > /opt/custom/smf/redis.xml << EOF
+<?xml version='1.0'?>
+<!DOCTYPE service_bundle SYSTEM '/usr/share/lib/xml/dtd/service_bundle.dtd.1'>
+<service_bundle type='manifest' name='export'>
+  <service name='pkgsrc/redis' type='service' version='1'>
+    <create_default_instance enabled='false'/>
+    <single_instance/>
+    <dependency name='network' grouping='require_all' restart_on='error' type='service'>
+      <service_fmri value='svc:/milestone/network:default'/>
+    </dependency>
+    <dependency name='filesystem' grouping='require_all' restart_on='error' type='service'>
+      <service_fmri value='svc:/system/filesystem/local'/>
+    </dependency>
+    <method_context working_directory='/var/db/redis' project='redis'>
+      <method_credential group='redis' user='redis'/>
+    </method_context>
+    <exec_method name='start' type='method' exec='/opt/local/bin/redis-server %{config_file}' timeout_seconds='60'/>
+    <exec_method name='stop' type='method' exec=':kill' timeout_seconds='60'/>
+    <property_group name='startd' type='framework'>
+      <propval name='duration' type='astring' value='contract'/>
+      <propval name='ignore_error' type='astring' value='core,signal'/>
+    </property_group>
+    <property_group name='application' type='application'>
+      <propval name='config_file' type='astring' value='/opt/local/etc/redis/redis.conf'/>
+    </property_group>
+    <template>
+      <common_name>
+        <loctext xml:lang='C'>Redis server</loctext>
+      </common_name>
+    </template>
+  </service>
+</service_bundle>
+EOF
+
+chown redis:redis /opt/local/etc/redis/
+chown redis:redis /opt/local/etc/redis/{redis,sentinel}.conf
 
 svccfg import /opt/custom/smf/redis-sentinel.xml
+svccfg import /opt/custom/smf/redis.xml
 svcadm enable redis-sentinel
 sleep 2
 svcadm enable redis
